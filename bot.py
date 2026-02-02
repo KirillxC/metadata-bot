@@ -88,7 +88,7 @@ async def handle_photo(message: types.Message):
     file = await bot.get_file(photo.file_id)
     file_bytes = await bot.download_file(file.file_path)
     exif_text, gps_coords = extract_exif(file_bytes.read())
-    reply = f"🧾 Метаданные:\n\n{exif_text}"
+    reply = f"📋 Метаданные:\n\n{exif_text}"
     if gps_coords:
         lat, lon = gps_coords
         reply += f"\n\n📍 GPS: https://www.google.com/maps?q={lat},{lon}"
@@ -104,7 +104,7 @@ async def handle_document(message: types.Message):
     file = await bot.get_file(message.document.file_id)
     file_bytes = await bot.download_file(file.file_path)
     exif_text, gps_coords = extract_exif(file_bytes.read())
-    reply = f"🧾 Метаданные:\n\n{exif_text}"
+    reply = f"📋 Метаданные:\n\n{exif_text}"
     if gps_coords:
         lat, lon = gps_coords
         reply += f"\n\n📍 GPS: https://www.google.com/maps?q={lat},{lon}"
