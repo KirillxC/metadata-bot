@@ -1,5 +1,7 @@
 # Metadata Extractor Bot
 
+[English](https://github.com/KirillxC/metadata-bot/blob/main/README.md) | [Русский](https://github.com/KirillxC/metadata-bot/blob/main/README.ru.md)
+
 A Telegram bot for extracting EXIF and document metadata.
 Try it live: [EXIF_export_bot](https://t.me/EXIF_export_bot)
 
