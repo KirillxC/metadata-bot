@@ -27,15 +27,19 @@ if not TOKEN:
     logging.critical("❌ TELEGRAM_BOT_TOKEN не найден! Проверь переменные окружения.")
     exit(1)
 
-if not CF_WORKER_URL:
-    logging.warning("⚠️ CLOUDFLARE_WORKER_URL не найден в .env! Убедись, что переменная задана.")
-
 # Настраиваем логирование
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Магия обхода блокировки РКН
-custom_server = TelegramAPIServer.from_base(CF_WORKER_URL) if CF_WORKER_URL else None
-bot = Bot(token=TOKEN, server=custom_server)
+# Магия обхода блокировки РКН — теперь с проверкой на пустую строку
+custom_server = None
+if CF_WORKER_URL and CF_WORKER_URL.strip():
+    logging.warning(f"✅ Использую Cloudflare Worker: {CF_WORKER_URL}")
+    custom_server = TelegramAPIServer.from_base(CF_WORKER_URL.strip())
+else:
+    logging.warning("⚠️ CLOUDFLARE_WORKER_URL не задан или пуст. Работаю напрямую через Telegram API.")
+
+# Создаём бота: если custom_server=None, aiogram сам подключится к api.telegram.org
+bot = Bot(token=TOKEN, server=custom_server) if custom_server else Bot(token=TOKEN)
 dp = Dispatcher()
 
 # -----------------------------
@@ -51,31 +55,43 @@ def safe_decode_bytes(value):
     return str(value) # Приводим к строке для безопасности HTML
 
 def dms_to_float(value):
+    """Конвертирует GPS координаты из Degrees, Minutes, Seconds в float"""
     if isinstance(value, tuple):
         if isinstance(value[0], tuple):
-            d = value[0][0] / value[0][1]
-            m = value[1][0] / value[1][1]
-            s = value[2][0] / value[2][1]
+            # Rational format: ((deg_num, deg_den), (min_num, min_den), (sec_num, sec_den))
+            d = float(value[0][0]) / float(value[0][1])
+            m = float(value[1][0]) / float(value[1][1])
+            s = float(value[2][0]) / float(value[2][1])
         else:
+            # Simple float tuple: (deg, min, sec)
             d, m, s = value
-        return d + m/60 + s/3600
+        return d + m/60.0 + s/3600.0
     return float(value)
 
-def extract_gps(exif):
-    gps_info = exif.get("GPSInfo")
-    if not gps_info:
+def extract_gps(gps_info_dict):
+    """Извлекает GPS координаты из словаря GPSInfo (числовые ключи)"""
+    if not gps_info_dict:
         return None
+    
     gps_data = {}
-    for t in gps_info:
-        sub_tag = GPSTAGS.get(t, t)
-        gps_data[sub_tag] = gps_info[t]
+    # Конвертируем числовые ключи в читаемые названия
+    for tag_id, value in gps_info_dict.items():
+        tag_name = GPSTAGS.get(tag_id, tag_id)
+        gps_data[tag_name] = value
+    
     try:
+        # Проверяем наличие всех необходимых полей
+        if "GPSLatitude" not in gps_data or "GPSLongitude" not in gps_data:
+            return None
+            
         lat = dms_to_float(gps_data["GPSLatitude"])
-        if gps_data.get("GPSLatitudeRef") == "S":
+        if gps_data.get("GPSLatitudeRef", "N") == "S":
             lat = -lat
+            
         lon = dms_to_float(gps_data["GPSLongitude"])
-        if gps_data.get("GPSLongitudeRef") == "W":
+        if gps_data.get("GPSLongitudeRef", "E") == "W":
             lon = -lon
+            
         return (lat, lon)
     except Exception as e:
         logging.error(f"Ошибка конвертации GPS: {e}")
@@ -85,12 +101,28 @@ def extract_exif_standard(file_bytes):
     try:
         image = Image.open(io.BytesIO(file_bytes))
         raw_exif = image._getexif()
+        
         if not raw_exif:
             return "❌ EXIF-данные не найдены", None
-        exif = {TAGS.get(tag, tag): safe_decode_bytes(val) for tag, val in raw_exif.items()}
-        gps_coords = extract_gps(exif)
-        lines = [f"<b>{k}</b>: {v}" for k, v in exif.items() if v]
+        
+        # Создаём словарь с читаемыми названиями тегов
+        exif = {}
+        for tag_id, value in raw_exif.items():
+            tag_name = TAGS.get(tag_id, tag_id)
+            exif[tag_name] = safe_decode_bytes(value)
+        
+        # Извлекаем GPS отдельно (он хранится с ключом 'GPSInfo')
+        gps_coords = None
+        if "GPSInfo" in exif:
+            # GPSInfo в raw_exif хранится с числовым ID 34853
+            gps_raw = raw_exif.get(34853)  # 34853 = тег GPSInfo
+            if gps_raw:
+                gps_coords = extract_gps(gps_raw)
+        
+        # Формируем текст для вывода
+        lines = [f"<b>{k}</b>: {v}" for k, v in exif.items() if v and k != "GPSInfo"]
         return "\n".join(lines)[:4000], gps_coords
+        
     except Exception as e:
         logging.error(f"Ошибка при чтении стандартного EXIF: {e}")
         return f"❌ Ошибка при чтении EXIF: {e}", None
@@ -109,7 +141,8 @@ def extract_exif_dng(file_bytes):
             return "❌ EXIF-данные не найдены в DNG", None
 
         lines = []
-        for tag in ['Image Make', 'Image Model', 'EXIF ExposureTime', 'EXIF FNumber', 'EXIF ISOSpeedRatings', 'EXIF FocalLength', 'EXIF DateTimeOriginal']:
+        for tag in ['Image Make', 'Image Model', 'EXIF ExposureTime', 'EXIF FNumber', 
+                     'EXIF ISOSpeedRatings', 'EXIF FocalLength', 'EXIF DateTimeOriginal']:
             if tag in tags:
                 lines.append(f"<b>{tag}</b>: {tags[tag]}")
 
@@ -129,6 +162,18 @@ def extract_exif_heic(file_bytes):
             tmp_path = tmp.name
 
         heif_file = pillow_heif.read_heif(tmp_path)
+        # Пробуем получить EXIF из HEIC
+        exif_data = {}
+        if hasattr(heif_file, 'info') and 'exif' in heif_file.info:
+            try:
+                image = Image.open(io.BytesIO(heif_file.info['exif']))
+                raw_exif = image._getexif()
+                if raw_exif:
+                    exif_data = {TAGS.get(tag, tag): safe_decode_bytes(val) 
+                                for tag, val in raw_exif.items()}
+            except:
+                pass
+        
         image = heif_file.to_pillow()
         lines = [
             f"<b>Width</b>: {image.width}",
@@ -136,6 +181,14 @@ def extract_exif_heic(file_bytes):
             f"<b>Mode</b>: {image.mode}",
             f"<b>Format</b>: HEIC/HEIF"
         ]
+        
+        # Добавляем EXIF данные если есть
+        if exif_data:
+            lines.append("\n📸 <b>Метаданные:</b>")
+            for k, v in exif_data.items():
+                if v and k != "GPSInfo":
+                    lines.append(f"<b>{k}</b>: {v}")
+        
         return "\n".join(lines), None
     except Exception as e:
         logging.error(f"Ошибка парсинга HEIC: {e}")
