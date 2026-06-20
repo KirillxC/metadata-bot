@@ -1,0 +1,23 @@
+services:
+  metadata_bot:
+    build: .
+    container_name: metadata_bot
+    restart: always
+    
+    volumes:
+      - .:/app
+    working_dir: /app
+    
+    env_file:
+      - .env
+      
+    environment:
+      - PYTHONUNBUFFERED=1
+
+    command: watchmedo auto-restart --patterns="*.py" --recursive -- python bot.py
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
